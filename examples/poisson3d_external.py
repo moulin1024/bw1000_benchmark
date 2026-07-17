@@ -7,18 +7,14 @@ import numpy as np
 from spectral_fd import Poisson3DConfig, Poisson3DSolver
 
 
-config = Poisson3DConfig(
+config = Poisson3DConfig.from_preset(
+    "dcu-rocm",
     nx=128,
     ny=128,
     nz=128,
-    dtype="float64",
-    method="spike",
-    tridiag="thomas",
-    thomas_chunk=16,
-    spike_interface_collective="allgather",
-    spike_interface_solver="selected-rows",
-    pipeline_execution="staged",
-    data_layout="z-first",
+    # CPU is useful for this small standalone example. Production DCU runs
+    # retain the preset's platform="rocm".
+    platform="cpu",
 )
 solver = Poisson3DSolver(config)
 

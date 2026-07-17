@@ -20,6 +20,8 @@
 #
 # Overrides:
 #   sbatch poisson_scaling.sh
+#   sbatch --export=ALL,PRESET=dcu-rocm poisson_scaling.sh
+#   sbatch --export=ALL,PRESET=none poisson_scaling.sh
 #   sbatch --export=ALL,NX=2048,NY=2048,NZ=256 poisson_scaling.sh
 #   sbatch --export=ALL,METHOD=spike,SPIKE_INTERFACE_COLLECTIVE=allgather poisson_scaling.sh
 #   sbatch --export=ALL,METHOD=spike,SPIKE_INTERFACE_SOLVER=block-thomas poisson_scaling.sh
@@ -33,6 +35,15 @@
 #   sbatch --export=ALL,RCCL_DEBUG=1,GPU_COUNTS=8,WARMUP=0,SAMPLES=1,ITERATIONS=1 poisson_scaling.sh
 
 set -euo pipefail
+
+PRESET="${PRESET:-dcu-rocm}"
+PRESET_FILE="${SLURM_SUBMIT_DIR}/benchmark_presets.sh"
+if [[ ! -f "${PRESET_FILE}" ]]; then
+    echo "ERROR: benchmark preset file not found: ${PRESET_FILE}" >&2
+    exit 2
+fi
+source "${PRESET_FILE}"
+apply_poisson_benchmark_preset "${PRESET}"
 
 BENCHMARK="${BENCHMARK:-${SLURM_SUBMIT_DIR}/poisson3d_distributed.py}"
 NX="${NX:-1024}"
@@ -82,6 +93,7 @@ mkdir -p "${RESULT_DIR}"
 echo "Job ID       : ${SLURM_JOB_ID}"
 echo "Node         : $(hostname)"
 echo "Benchmark    : ${BENCHMARK}"
+echo "Preset       : ${PRESET}"
 echo "Python       : $(command -v python)"
 echo "Configuration: grid=${NX}x${NY}x${NZ}, dtype=${DTYPE}, tridiag=${TRIDIAG}, thomas_chunk=${THOMAS_CHUNK}, method=${METHOD}, spike_collective=${SPIKE_INTERFACE_COLLECTIVE}, spike_interface_solver=${SPIKE_INTERFACE_SOLVER}, pipeline=${PIPELINE_EXECUTION}, layout=${DATA_LAYOUT}, mms=${MMS}, task_mode=${TASK_MODE}"
 echo "GPU counts   : ${GPU_COUNTS}"

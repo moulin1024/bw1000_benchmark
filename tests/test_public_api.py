@@ -5,12 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from spectral_fd import Poisson3DConfig, Poisson3DSolver
+from spectral_fd._compat import config_to_run_options
 
 
 class Poisson3DConfigTests(unittest.TestCase):
     def test_defaults_translate_to_legacy_arguments(self) -> None:
         config = Poisson3DConfig()
-        args = config._as_legacy_namespace()
+        args = config_to_run_options(config)
 
         self.assertEqual((args.nx, args.ny, args.nz), (1024, 1024, 128))
         self.assertFalse(args.no_nyquist_filter)
@@ -18,7 +19,7 @@ class Poisson3DConfigTests(unittest.TestCase):
         self.assertTrue(args.skip_components)
 
     def test_nyquist_filter_translation(self) -> None:
-        args = Poisson3DConfig(nyquist_filter=False)._as_legacy_namespace()
+        args = config_to_run_options(Poisson3DConfig(nyquist_filter=False))
         self.assertTrue(args.no_nyquist_filter)
 
     def test_rejects_odd_horizontal_grid(self) -> None:

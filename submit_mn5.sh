@@ -6,6 +6,8 @@
 #   sbatch submit_mn5.sh
 #
 # Runtime overrides:
+#   sbatch --export=ALL,PRESET=mn5-cuda submit_mn5.sh
+#   sbatch --export=ALL,PRESET=none submit_mn5.sh
 #   sbatch --export=ALL,NX=2048,NY=2048,NZ=256 submit_mn5.sh
 #   sbatch --export=ALL,GPU_COUNTS="1 2 4",WARMUP=1,SAMPLES=3,ITERATIONS=2 submit_mn5.sh
 #   sbatch --export=ALL,SPIKE_INTERFACE_COLLECTIVE=alltoall submit_mn5.sh
@@ -29,6 +31,15 @@
 #SBATCH --error=poisson3d-mn5.%j.err
 
 set -euo pipefail
+
+PRESET="${PRESET:-mn5-cuda}"
+PRESET_FILE="${SLURM_SUBMIT_DIR}/benchmark_presets.sh"
+if [[ ! -f "${PRESET_FILE}" ]]; then
+    echo "ERROR: benchmark preset file not found: ${PRESET_FILE}" >&2
+    exit 2
+fi
+source "${PRESET_FILE}"
+apply_poisson_benchmark_preset "${PRESET}"
 
 BENCHMARK="${BENCHMARK:-${SLURM_SUBMIT_DIR}/poisson3d_distributed.py}"
 NX="${NX:-1024}"
@@ -79,6 +90,7 @@ mkdir -p "${RESULT_DIR}"
 echo "Job ID       : ${SLURM_JOB_ID}"
 echo "Node         : $(hostname)"
 echo "Benchmark    : ${BENCHMARK}"
+echo "Preset       : ${PRESET}"
 echo "Python       : $(command -v "${PYTHON_BIN}")"
 echo "Virtual env  : ${VIRTUAL_ENV:-${VENV_ACTIVATE}}"
 echo "Configuration: grid=${NX}x${NY}x${NZ}, dtype=${DTYPE}, tridiag=${TRIDIAG}, thomas_chunk=${THOMAS_CHUNK}, method=${METHOD}, spike_collective=${SPIKE_INTERFACE_COLLECTIVE}, spike_interface_solver=${SPIKE_INTERFACE_SOLVER}, pipeline=${PIPELINE_EXECUTION}, layout=${DATA_LAYOUT}, mms=${MMS}"
