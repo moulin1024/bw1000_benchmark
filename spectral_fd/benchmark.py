@@ -70,12 +70,36 @@ class PoissonBenchmarkContext:
 
 
 @dataclass(frozen=True, slots=True)
+class OperationTiming:
+    """First-call and sampled timing statistics for one operation."""
+
+    first_call_seconds: float
+    samples_seconds: tuple[float, ...]
+    median_seconds: float
+    best_seconds: float
+    mean_seconds: float
+    p95_seconds: float
+    first_call_note: str
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineBenchmarkResult:
-    """Output and timing statistics from one benchmark suite."""
+    """Output and detailed timings from one benchmark suite."""
 
     output: Any
-    full_seconds: float
-    component_seconds: dict[str, float]
+    full_timing: OperationTiming
+    component_timings: dict[str, OperationTiming]
+
+    @property
+    def full_seconds(self) -> float:
+        return self.full_timing.median_seconds
+
+    @property
+    def component_seconds(self) -> dict[str, float]:
+        return {
+            name: timing.median_seconds
+            for name, timing in self.component_timings.items()
+        }
 
 
 class DistributedBenchmarkRunner:
@@ -138,19 +162,28 @@ class DistributedBenchmarkRunner:
         first_call: float,
         times: list[float],
         first_call_note: str = "compile+run",
-    ) -> float:
-        """Print one timing table and return its median."""
+    ) -> OperationTiming:
+        """Print one timing table and return its structured statistics."""
         median_seconds = statistics.median(times)
+        timing = OperationTiming(
+            first_call_seconds=first_call,
+            samples_seconds=tuple(times),
+            median_seconds=median_seconds,
+            best_seconds=min(times),
+            mean_seconds=statistics.mean(times),
+            p95_seconds=percentile(times, 0.95),
+            first_call_note=first_call_note,
+        )
         if self._process_index == 0:
             print(f"\n{label}")
             print(f"  first call ({first_call_note}): {first_call * 1e3:.3f} ms")
             print(f"  median                 : {median_seconds * 1e3:.3f} ms")
-            print(f"  best                   : {min(times) * 1e3:.3f} ms")
+            print(f"  best                   : {timing.best_seconds * 1e3:.3f} ms")
             print(
-                f"  mean / p95             : {statistics.mean(times) * 1e3:.3f} / "
-                f"{percentile(times, 0.95) * 1e3:.3f} ms"
+                f"  mean / p95             : {timing.mean_seconds * 1e3:.3f} / "
+                f"{timing.p95_seconds * 1e3:.3f} ms"
             )
-        return median_seconds
+        return timing
 
 
 def print_benchmark_configuration(args, context: PoissonBenchmarkContext) -> None:
@@ -244,10 +277,10 @@ def run_pipeline_benchmark(
     rhs,
 ) -> PipelineBenchmarkResult:
     """Measure requested component stages and the complete solve."""
-    component_times: dict[str, float] = {}
+    component_timings: dict[str, OperationTiming] = {}
     if not args.skip_components and operators.is_spike:
         rhs_hat, first_call, times = runner.measure(pipeline.forward_fft, rhs)
-        component_times["rfft2"] = runner.report(
+        component_timings["rfft2"] = runner.report(
             "Forward rfft2 (local)", first_call, times
         )
 
@@ -256,7 +289,7 @@ def run_pipeline_benchmark(
             rhs_hat,
             *operators.solve_args,
         )
-        component_times["spike"] = runner.report(
+        component_timings["spike"] = runner.report(
             f"{args.method} vertical solve (local "
             f"{context.spike_local_description} + "
             f"{context.reduced_size}-row interface)",
@@ -267,14 +300,14 @@ def run_pipeline_benchmark(
         gc.collect()
 
         _, first_call, times = runner.measure(pipeline.inverse_fft, pressure_hat)
-        component_times["irfft2"] = runner.report(
+        component_timings["irfft2"] = runner.report(
             "Inverse irfft2 (local)", first_call, times
         )
         del pressure_hat
         gc.collect()
     elif not args.skip_components:
         rhs_hat, first_call, times = runner.measure(pipeline.forward_fft, rhs)
-        component_times["rfft2"] = runner.report(
+        component_timings["rfft2"] = runner.report(
             "Forward rfft2 (local)", first_call, times
         )
 
@@ -282,7 +315,7 @@ def run_pipeline_benchmark(
             pipeline.transpose_z_to_y,
             rhs_hat,
         )
-        component_times["z_to_y"] = runner.report(
+        component_timings["z_to_y"] = runner.report(
             "z-slab -> y-slab all-to-all"
             if context.global_devices > 1
             else "z-slab -> y-slab (local reshape)",
@@ -302,7 +335,7 @@ def run_pipeline_benchmark(
             rhs_hat_y,
             *operators.solve_args,
         )
-        component_times["tridiag"] = runner.report(
+        component_timings["tridiag"] = runner.report(
             tridiagonal_label,
             first_call,
             times,
@@ -314,7 +347,7 @@ def run_pipeline_benchmark(
             pipeline.transpose_y_to_z,
             pressure_hat_y,
         )
-        component_times["y_to_z"] = runner.report(
+        component_timings["y_to_z"] = runner.report(
             "y-slab -> z-slab all-to-all"
             if context.global_devices > 1
             else "y-slab -> z-slab (local reshape)",
@@ -325,7 +358,7 @@ def run_pipeline_benchmark(
         gc.collect()
 
         _, first_call, times = runner.measure(pipeline.inverse_fft, pressure_hat)
-        component_times["irfft2"] = runner.report(
+        component_timings["irfft2"] = runner.report(
             "Inverse irfft2 (local)", first_call, times
         )
         del pressure_hat
@@ -346,7 +379,7 @@ def run_pipeline_benchmark(
         if args.pipeline_execution == "staged" and not args.skip_components
         else "compile+run"
     )
-    full_seconds = runner.report(
+    full_timing = runner.report(
         f"Complete pressure-Poisson solve ({args.pipeline_execution})",
         first_call,
         times,
@@ -354,8 +387,8 @@ def run_pipeline_benchmark(
     )
     return PipelineBenchmarkResult(
         output=output,
-        full_seconds=full_seconds,
-        component_seconds=component_times,
+        full_timing=full_timing,
+        component_timings=component_timings,
     )
 
 

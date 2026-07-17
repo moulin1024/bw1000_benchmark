@@ -5,22 +5,22 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from spectral_fd import Poisson3DConfig, Poisson3DSolver
-from spectral_fd._compat import config_to_run_options
+from spectral_fd.cli import build_parser
+from spectral_fd.driver import solver_config_from_options
 
 
 class Poisson3DConfigTests(unittest.TestCase):
-    def test_defaults_translate_to_legacy_arguments(self) -> None:
-        config = Poisson3DConfig()
-        args = config_to_run_options(config)
+    def test_cli_defaults_translate_to_public_config(self) -> None:
+        args = build_parser().parse_args([])
+        config = solver_config_from_options(args)
 
-        self.assertEqual((args.nx, args.ny, args.nz), (1024, 1024, 128))
-        self.assertFalse(args.no_nyquist_filter)
-        self.assertFalse(args.mms)
-        self.assertTrue(args.skip_components)
+        self.assertEqual((config.nx, config.ny, config.nz), (1024, 1024, 128))
+        self.assertTrue(config.nyquist_filter)
+        self.assertEqual(config.method, "transpose")
 
-    def test_nyquist_filter_translation(self) -> None:
-        args = config_to_run_options(Poisson3DConfig(nyquist_filter=False))
-        self.assertTrue(args.no_nyquist_filter)
+    def test_cli_nyquist_filter_translation(self) -> None:
+        args = build_parser().parse_args(["--no-nyquist-filter"])
+        self.assertFalse(solver_config_from_options(args).nyquist_filter)
 
     def test_rejects_odd_horizontal_grid(self) -> None:
         with self.assertRaisesRegex(ValueError, "nx and ny must be even"):
@@ -48,7 +48,7 @@ class Poisson3DConfigTests(unittest.TestCase):
             data_layout="z-first",
         )
 
-        with patch("poisson3d_distributed.build_solver", return_value=engine):
+        with patch("spectral_fd.factory.build_solver_engine", return_value=engine):
             solver = Poisson3DSolver(config)
 
         self.assertEqual(solver.global_devices, 8)

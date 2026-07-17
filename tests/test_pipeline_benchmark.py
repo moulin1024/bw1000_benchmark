@@ -113,7 +113,9 @@ class DistributedBenchmarkTests(unittest.TestCase):
         self.assertEqual(np.asarray(output)[0], 4.0)
         self.assertGreaterEqual(first_call, 0.0)
         self.assertEqual(len(times), 2)
-        self.assertEqual(runner.report("test", first_call, times), np.median(times))
+        timing = runner.report("test", first_call, times)
+        self.assertEqual(timing.median_seconds, np.median(times))
+        self.assertEqual(timing.samples_seconds, tuple(times))
 
 
 if __name__ == "__main__":

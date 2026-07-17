@@ -1,0 +1,87 @@
+name: Numerical CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: Run the full 144-case numerical matrix
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: numerical-ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-smoke:
+    name: Quality and 9-case matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . "jax[cpu]" ruff
+      - name: Static checks
+        run: |
+          ruff check spectral_fd poisson3d_distributed.py tests
+          python -m compileall -q spectral_fd poisson3d_distributed.py tests
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Covering numerical matrix
+        run: >-
+          spectral-fd-regression --quick
+          --output benchmark-results/numerical-smoke.json
+      - name: Upload covering matrix
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: numerical-smoke-${{ github.run_id }}
+          path: benchmark-results/numerical-smoke.json
+          if-no-files-found: warn
+
+  full-matrix:
+    name: Full matrix shard ${{ matrix.shard }}
+    if: github.event_name == 'workflow_dispatch' && inputs.full_matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install CPU regression dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . "jax[cpu]"
+      - name: Run full numerical matrix shard
+        run: >-
+          spectral-fd-regression
+          --shard-count 4
+          --shard-index ${{ matrix.shard }}
+          --output benchmark-results/numerical-full-shard-${{ matrix.shard }}.json
+      - name: Upload full matrix shard
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: numerical-full-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: benchmark-results/numerical-full-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn

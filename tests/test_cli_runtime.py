@@ -24,14 +24,30 @@ class Poisson3DCLITests(unittest.TestCase):
         self.assertEqual(args.pipeline_execution, config.pipeline_execution)
         self.assertEqual(args.data_layout, config.data_layout)
 
-    def test_package_cli_delegates_parsed_options_to_core(self) -> None:
-        with patch("poisson3d_distributed._run", return_value=17) as run:
+    def test_package_cli_delegates_parsed_options_to_driver(self) -> None:
+        with patch("spectral_fd.driver.run_benchmark", return_value=17) as run:
             result = main(["--nx", "64", "--ny", "96", "--skip-components"])
 
         self.assertEqual(result, 17)
         options = run.call_args.args[0]
         self.assertEqual((options.nx, options.ny), (64, 96))
         self.assertTrue(options.skip_components)
+
+    def test_parser_accepts_structured_report_paths(self) -> None:
+        args = build_parser().parse_args(
+            ["--report-json", "result.json", "--report-csv", "result.csv"]
+        )
+        self.assertEqual(args.report_json, "result.json")
+        self.assertEqual(args.report_csv, "result.csv")
+
+    def test_legacy_script_is_only_a_package_cli_forwarder(self) -> None:
+        import poisson3d_distributed
+
+        with patch("spectral_fd.cli.main", return_value=23) as package_main:
+            result = poisson3d_distributed.main(["--nx", "32"])
+
+        self.assertEqual(result, 23)
+        package_main.assert_called_once_with(["--nx", "32"])
 
 
 class JaxRuntimeTests(unittest.TestCase):

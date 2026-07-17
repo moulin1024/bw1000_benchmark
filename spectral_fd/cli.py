@@ -170,6 +170,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="measure only the complete solve",
     )
+    parser.add_argument(
+        "--report-json",
+        metavar="PATH",
+        help="write a versioned JSON benchmark record on the root process",
+    )
+    parser.add_argument(
+        "--report-csv",
+        metavar="PATH",
+        help="write a one-row CSV benchmark record on the root process",
+    )
     return parser
 
 
@@ -177,11 +187,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the benchmark through the package CLI."""
     args = build_parser().parse_args(argv)
 
-    # Keep JAX and the numerical implementation lazy so ``--help`` and parser
-    # tests do not initialize a backend.
-    from poisson3d_distributed import _run
+    # Keep JAX lazy so ``--help`` and parser tests do not initialize a backend.
+    from .driver import run_benchmark
 
-    return _run(args)
+    return run_benchmark(args)
 
 
 if __name__ == "__main__":

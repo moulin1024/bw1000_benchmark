@@ -54,6 +54,45 @@ spectral-fd-poisson --nx 1024 --ny 1024 --nz 1024 --method spike
 python poisson3d_distributed.py --nx 1024 --ny 1024 --nz 1024 --method spike
 ```
 
+Benchmark results can be emitted with a versioned JSON schema and a fixed-
+column CSV row in addition to the human-readable report:
+
+```bash
+spectral-fd-poisson --method spike --report-json results/run.json \
+  --report-csv results/run.csv
+```
+
+The numerical regression runner provides a nine-case covering matrix for CI
+and the full 144-case Cartesian matrix. Device-count groups run in isolated
+CPU/JAX subprocesses so 1/2/4-device configurations can coexist in one run:
+
+```bash
+spectral-fd-regression --quick --output results/regression-smoke.json
+spectral-fd-regression --output results/regression-full.json
+# Optional CI sharding:
+spectral-fd-regression --shard-count 4 --shard-index 0
+```
+
+The repository workflow runs static checks, unit tests, and the nine-case
+matrix for every push and pull request. The full matrix is deliberately
+manual to avoid unexpected private-repository runner charges: open **Actions →
+Numerical CI → Run workflow** and enable `full_matrix`. Its four shards upload
+separate JSON artifacts.
+
+Compare benchmark files or directories with a configurable regression gate:
+
+```bash
+spectral-fd-compare results/baseline results/candidate \
+  --max-regression-percent 5 \
+  --markdown results/comparison.md \
+  --json results/comparison.json
+```
+
+Reports are matched by solver/grid/runtime configuration. A positive runtime
+change means the candidate is slower; the command exits nonzero for a full-
+solve regression above the threshold or a missing candidate configuration.
+Use `--allow-missing` when intentionally comparing a partial matrix.
+
 For multi-process execution, initialize one solver per process with
 `distributed=True`, using the same Slurm launch conventions as the benchmark.
 The library currently expects the application to own data distribution; it
@@ -74,17 +113,20 @@ regression cases. The benchmark CLI remains GPU-only.
 - `spectral_fd.spike_local`: local block factors and spike-vector assembly.
 - `spectral_fd.spike_adaptive`: adaptive PDD closure and exact low-kh box.
 - `spectral_fd.pipeline`: mapped stage assembly, operator bundles, and residuals.
+- `spectral_fd.factory`: JAX runtime initialization and solver assembly.
+- `spectral_fd.validation`: random/MMS fields and distributed error metrics.
 - `spectral_fd.benchmark`: distributed timing and benchmark reporting.
+- `spectral_fd.reporting`: stable JSON/CSV benchmark serialization.
+- `spectral_fd.compare`: matched benchmark comparison and regression gates.
+- `spectral_fd.regression`: 1/2/4-device numerical regression matrices.
 - `spectral_fd.runtime`: JAX environment and distributed-launch policy.
-- `spectral_fd.cli`: package-owned benchmark argument parsing and entry point.
+- `spectral_fd.driver`: package-owned benchmark orchestration.
+- `spectral_fd.cli`: benchmark argument parsing and package entry point.
 - `spectral_fd.solver`: public callable solver facade.
 - `spectral_fd._engine`: internal binding of factors to solve callables.
-- `spectral_fd._compat`: internal public-config to benchmark-core adapter.
-- Validation-data generation and top-level CLI orchestration currently remain
-  in `poisson3d_distributed.py`.
+- `poisson3d_distributed.py` is only a thin historical CLI forwarder.
 - The benchmark CLI and library API share the same factor builders and solve
   callables, avoiding a second implementation.
 
-This boundary is intentional. Subsequent refactors can move manufactured-
-solution generation and validation policy into package modules without
-changing external application code.
+The package CLI and public solver now construct the factory directly; the
+legacy script contains no numerical or orchestration implementation.

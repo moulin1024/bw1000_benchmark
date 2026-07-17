@@ -71,13 +71,10 @@ class Poisson3DConfig:
             "dense",
         ):
             raise ValueError(
-                "unsupported SPIKE interface solver: "
-                f"{self.spike_interface_solver!r}"
+                f"unsupported SPIKE interface solver: {self.spike_interface_solver!r}"
             )
         if self.pipeline_execution not in ("monolithic", "staged"):
-            raise ValueError(
-                "pipeline_execution must be 'monolithic' or 'staged'"
-            )
+            raise ValueError("pipeline_execution must be 'monolithic' or 'staged'")
         if self.data_layout not in ("xyz", "z-first"):
             raise ValueError("data_layout must be 'xyz' or 'z-first'")
         if self.platform not in (None, "cpu", "cuda", "rocm"):

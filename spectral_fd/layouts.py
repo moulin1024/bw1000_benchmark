@@ -25,19 +25,14 @@ class SlabDecomposition:
             raise ValueError("local_devices cannot exceed global_devices")
         if self.ny % self.global_devices:
             raise ValueError(
-                f"ny={self.ny} must be divisible by GPU count "
-                f"{self.global_devices}"
+                f"ny={self.ny} must be divisible by GPU count {self.global_devices}"
             )
         if self.nz % self.global_devices:
             raise ValueError(
-                f"nz={self.nz} must be divisible by GPU count "
-                f"{self.global_devices}"
+                f"nz={self.nz} must be divisible by GPU count {self.global_devices}"
             )
         if self.method != "transpose" and self.nz_local < 2:
-            raise ValueError(
-                "SPIKE methods need nz/GPUs >= 2; "
-                f"got {self.nz_local}"
-            )
+            raise ValueError(f"SPIKE methods need nz/GPUs >= 2; got {self.nz_local}")
 
     @property
     def nxh(self) -> int:

@@ -49,8 +49,7 @@ class Poisson3DEngine:
         expected_dtype = np.dtype(self.config.dtype)
         if dtype != expected_dtype:
             raise TypeError(
-                f"rhs dtype {dtype} does not match configured dtype "
-                f"{expected_dtype}"
+                f"rhs dtype {dtype} does not match configured dtype {expected_dtype}"
             )
 
     def solve(self, rhs, *, execution=None):

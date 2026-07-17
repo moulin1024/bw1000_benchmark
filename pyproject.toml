@@ -12,6 +12,8 @@ dependencies = ["numpy"]
 
 [project.scripts]
 spectral-fd-poisson = "spectral_fd.cli:main"
+spectral-fd-regression = "spectral_fd.regression:main"
+spectral-fd-compare = "spectral_fd.compare:main"
 
 [tool.setuptools]
 py-modules = ["poisson3d_distributed"]

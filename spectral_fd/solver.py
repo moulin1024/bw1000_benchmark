@@ -25,10 +25,10 @@ class Poisson3DSolver:
         config.validate()
         # Lazy import is important: the implementation sets JAX backend and
         # precision environment variables before importing JAX.
-        from poisson3d_distributed import build_solver
+        from .factory import build_solver_engine
 
         self.config = config
-        self._engine = build_solver(config)
+        self._engine = build_solver_engine(config)
 
     @classmethod
     def from_preset(cls, name: str, **overrides) -> "Poisson3DSolver":
