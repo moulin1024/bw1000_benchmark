@@ -66,6 +66,7 @@ def build_vertical_operator_rows(
     dz2: float,
     real_dtype: Any,
     zero_tolerance: float,
+    discretization: str = "legacy-augmented",
 ):
     """Build one device's rows of the distributed vertical operator."""
     ky_local = lax.dynamic_slice_in_dim(
@@ -83,6 +84,44 @@ def build_vertical_operator_rows(
     zero_k2 = jnp.abs(k2) < zero_tolerance
     nxh = kx.shape[0]
     one = jnp.asarray(1.0, real_dtype)
+
+    if discretization == "cell-centered-compatible":
+        if layout.z_first:
+            shape = (nz, ny_local, nxh)
+            k2_local = layout.interface_to_mode(k2)
+            pinned_local = layout.interface_to_mode(zero_k2 | (keep_local == 0))
+            a = jnp.zeros(shape, real_dtype)
+            a = a.at[1:].set(1.0 / dz2)
+            b = jnp.broadcast_to(
+                -k2_local[None, ...] - 2.0 / dz2,
+                shape,
+            )
+            b = b.at[0].add(1.0 / dz2)
+            b = b.at[-1].add(1.0 / dz2)
+            c = jnp.zeros(shape, real_dtype)
+            c = c.at[:-1].set(1.0 / dz2)
+            b = b.at[0].set(jnp.where(pinned_local, one, b[0]))
+            c = c.at[0].set(jnp.where(pinned_local, 0.0 * one, c[0]))
+            return a, b, c, layout.mode_broadcast(keep_local)
+
+        shape = (nxh, ny_local, nz)
+        pinned = zero_k2 | (keep_local == 0)
+        a = jnp.zeros(shape, real_dtype)
+        a = a.at[..., 1:].set(1.0 / dz2)
+        b = jnp.broadcast_to(
+            -k2[..., None] - 2.0 / dz2,
+            shape,
+        )
+        b = b.at[..., 0].add(1.0 / dz2)
+        b = b.at[..., -1].add(1.0 / dz2)
+        c = jnp.zeros(shape, real_dtype)
+        c = c.at[..., :-1].set(1.0 / dz2)
+        b = b.at[..., 0].set(jnp.where(pinned, one, b[..., 0]))
+        c = c.at[..., 0].set(jnp.where(pinned, 0.0 * one, c[..., 0]))
+        return a, b, c, layout.mode_broadcast(keep_local)
+
+    if discretization != "legacy-augmented":
+        raise ValueError(f"unsupported discretization: {discretization!r}")
 
     if layout.z_first:
         shape = (nz + 1, ny_local, nxh)
@@ -128,6 +167,7 @@ def make_vertical_operator_builder(
     dz2: float,
     real_dtype: Any,
     zero_tolerance: float,
+    discretization: str = "legacy-augmented",
 ) -> Callable[[Any], tuple[Any, Any, Any, Any]]:
     """Bind static setup data to the function mapped across JAX devices."""
 
@@ -145,6 +185,7 @@ def make_vertical_operator_builder(
             dz2=dz2,
             real_dtype=real_dtype,
             zero_tolerance=zero_tolerance,
+            discretization=discretization,
         )
 
     return build
@@ -161,23 +202,63 @@ def build_spike_block_rows(
     nz: int,
     dz2: float,
     real_dtype: Any,
+    zero_tolerance: float,
+    discretization: str = "legacy-augmented",
 ):
     """Build the full-coupling tridiagonal rows owned by one SPIKE block."""
+    inverse_dz2 = 1.0 / dz2
+    k2 = kx[:, None] * kx[:, None] + ky[None, :] * ky[None, :]
+
+    if discretization == "cell-centered-compatible":
+        rows = device_index * block_size + jnp.arange(block_size)
+        a = jnp.where(rows > 0, inverse_dz2, 0.0).astype(real_dtype)
+        c = jnp.where(rows < nz - 1, inverse_dz2, 0.0).astype(real_dtype)
+        shape = (
+            (block_size, ky.shape[0], kx.shape[0])
+            if layout.z_first
+            else (kx.shape[0], ky.shape[0], block_size)
+        )
+        b = jnp.broadcast_to(
+            -layout.mode_broadcast(k2) - 2.0 * inverse_dz2,
+            shape,
+        )
+        lower_boundary = rows == 0
+        upper_boundary = rows == nz - 1
+        b = b + layout.z_broadcast(
+            (lower_boundary | upper_boundary).astype(real_dtype) * inverse_dz2
+        )
+
+        # The Neumann zero mode is singular. Adding gamma*e0*e0^T with
+        # gamma=2/dz^2 pins p[0]=0 for a compatible RHS without replacing a
+        # physical PDE row, and keeps the first Thomas pivot nonzero. The
+        # inverse transform later converts this to the public mean-zero gauge.
+        zero_k2 = jnp.abs(k2) < zero_tolerance
+        b = b + (
+            layout.z_broadcast(lower_boundary.astype(real_dtype))
+            * layout.mode_broadcast(zero_k2.astype(real_dtype))
+            * (2.0 * inverse_dz2)
+        )
+        return a, b, c
+
+    if discretization != "legacy-augmented":
+        raise ValueError(f"unsupported discretization: {discretization!r}")
+
     rows = device_index * block_size + 1 + jnp.arange(block_size)
     interior = rows <= nz - 1
-    a = jnp.where(interior, 1.0 / dz2, -1.0).astype(real_dtype)
-    c = jnp.where(interior, 1.0 / dz2, 0.0).astype(real_dtype)
-    k2 = kx[:, None] * kx[:, None] + ky[None, :] * ky[None, :]
+    a = jnp.where(interior, inverse_dz2, -1.0).astype(real_dtype)
+    c = jnp.where(interior, inverse_dz2, 0.0).astype(real_dtype)
     if layout.z_first:
         b = jnp.where(
             interior[:, None, None],
-            (-layout.interface_to_mode(k2)[None, ...] - 2.0 / dz2).astype(real_dtype),
+            (-layout.interface_to_mode(k2)[None, ...] - 2.0 * inverse_dz2).astype(
+                real_dtype
+            ),
             jnp.asarray(1.0, real_dtype),
         )
     else:
         b = jnp.where(
             interior[None, None, :],
-            (-k2[..., None] - 2.0 / dz2).astype(real_dtype),
+            (-k2[..., None] - 2.0 * inverse_dz2).astype(real_dtype),
             jnp.asarray(1.0, real_dtype),
         )
     return a, b, c

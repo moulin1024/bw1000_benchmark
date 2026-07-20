@@ -110,6 +110,7 @@ def build_poisson_pipeline(
     spike_raw: Callable,
     spike_filtered: Callable,
     block_rows: Callable,
+    discretization: str = "legacy-augmented",
 ) -> PoissonPipelineStages:
     """Create mapped component, full-solve, and residual callables."""
     mapped = partial(jax.pmap, axis_name=axis_name)
@@ -125,8 +126,19 @@ def build_poisson_pipeline(
         axis_name=axis_name,
         device_count=device_count,
     )
+    cell_centered = discretization == "cell-centered-compatible"
+    if not cell_centered and discretization != "legacy-augmented":
+        raise ValueError(f"unsupported discretization: {discretization!r}")
 
     def make_rhs_column(rhs_hat_y):
+        if cell_centered:
+            # The constant horizontal mode uses row zero as a gauge equation.
+            # Compatibility was enforced in physical space before the FFT, so
+            # the omitted PDE row follows from the remaining Neumann rows.
+            zero = jnp.asarray(0.0, rhs_hat_y.dtype)
+            first = rhs_hat_y[(0,) * rhs_hat_y.ndim]
+            pinned = jnp.where(lax.axis_index(axis_name) == 0, zero, first)
+            return rhs_hat_y.at[(0,) * rhs_hat_y.ndim].set(pinned)
         if layout.z_first:
             rhs_column = jnp.zeros(
                 (nz + 1,) + rhs_hat_y.shape[1:],
@@ -140,17 +152,25 @@ def build_poisson_pipeline(
         return rhs_column.at[..., 1:nz].set(rhs_hat_y[..., : nz - 1])
 
     def tridiagonal_pressure(rhs_hat_y, operator1, operator2, operator3, keep):
+        rhs_column = make_rhs_column(rhs_hat_y)
+        if cell_centered:
+            rhs_column = rhs_column * keep.astype(rhs_column.dtype)
         pressure_column = tridiagonal_solve(
             operator1,
             operator2,
             operator3,
-            make_rhs_column(rhs_hat_y),
+            rhs_column,
         )
+        if cell_centered:
+            return pressure_column * keep.astype(pressure_column.dtype)
         if layout.z_first:
             return pressure_column[1:] * keep.astype(pressure_column.dtype)
         return pressure_column[..., 1:] * keep.astype(pressure_column.dtype)
 
     def forward_fft_local(rhs):
+        if cell_centered:
+            local_mean = jnp.mean(rhs)
+            rhs = rhs - lax.pmean(local_mean, axis_name)
         return layout.forward_fft_local(rhs)
 
     def transpose_z_to_y_local(spectral):
@@ -169,7 +189,11 @@ def build_poisson_pipeline(
         return y_to_z(spectral)
 
     def inverse_fft_local(spectral):
-        return layout.inverse_fft_local(spectral)
+        pressure = layout.inverse_fft_local(spectral)
+        if cell_centered:
+            local_mean = jnp.mean(pressure)
+            pressure = pressure - lax.pmean(local_mean, axis_name)
+        return pressure
 
     def spike_stage_local(spectral, *operators):
         return spike_filtered(spectral, *operators)
@@ -182,7 +206,7 @@ def build_poisson_pipeline(
     spike_stage = mapped(spike_stage_local)
 
     def solve_monolithic_local(rhs, *operators):
-        spectral = layout.forward_fft_local(rhs)
+        spectral = forward_fft_local(rhs)
         if is_spike:
             spectral = spike_filtered(spectral, *operators)
         else:
@@ -195,7 +219,7 @@ def build_poisson_pipeline(
                 operators[3],
             )
             spectral = y_to_z(spectral)
-        return layout.inverse_fft_local(spectral)
+        return inverse_fft_local(spectral)
 
     solve_monolithic = mapped(solve_monolithic_local)
 
@@ -217,7 +241,7 @@ def build_poisson_pipeline(
         return inverse_fft(spectral)
 
     def residual_spike_local(rhs, *operators):
-        spectral = layout.forward_fft_local(rhs)
+        spectral = forward_fft_local(rhs)
         pressure, left_right, masked_rhs = spike_raw(spectral, *operators)
         device_index = lax.axis_index(axis_name)
         a_block, b_block, c_block = block_rows(device_index)
@@ -271,8 +295,10 @@ def build_poisson_pipeline(
         operator3,
         keep,
     ):
-        spectral = layout.forward_fft_local(rhs)
+        spectral = forward_fft_local(rhs)
         rhs_column = make_rhs_column(z_to_y(spectral))
+        if cell_centered:
+            rhs_column = rhs_column * keep.astype(rhs_column.dtype)
         pressure_column = tridiagonal_solve(
             operator1,
             operator2,

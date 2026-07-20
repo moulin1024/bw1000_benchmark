@@ -24,6 +24,7 @@ class SpikeInterfaceOps:
         "solver",
         "ic_cut",
         "jc_cut",
+        "discretization",
     )
 
     def __init__(
@@ -41,11 +42,17 @@ class SpikeInterfaceOps:
         solver: InterfaceSolver,
         ic_cut: int,
         jc_cut: int,
+        discretization: str = "legacy-augmented",
     ) -> None:
         if collective not in ("alltoall", "allgather"):
             raise ValueError(f"unsupported SPIKE collective: {collective!r}")
         if solver not in ("selected-rows", "block-thomas", "dense"):
             raise ValueError(f"unsupported SPIKE interface solver: {solver!r}")
+        if discretization not in (
+            "legacy-augmented",
+            "cell-centered-compatible",
+        ):
+            raise ValueError(f"unsupported discretization: {discretization!r}")
         self.jnp = jnp
         self.lax = lax
         self.axis_name = axis_name
@@ -59,9 +66,16 @@ class SpikeInterfaceOps:
         self.solver = solver
         self.ic_cut = ic_cut
         self.jc_cut = jc_cut
+        self.discretization = discretization
+
+    @property
+    def cell_centered(self) -> bool:
+        return self.discretization == "cell-centered-compatible"
 
     @property
     def reduced_size(self) -> int:
+        if self.cell_centered:
+            return 2 * self.device_count
         return 2 * self.device_count + 1
 
     def box_slice(self, values):
@@ -132,13 +146,37 @@ class SpikeInterfaceOps:
         return self.scalars_to_modes(stacked)
 
     def assemble_matrix(self, interface, k2):
-        """Assemble the static ``(2P+1)``-row reduced interface matrix."""
+        """Assemble the static reduced interface matrix."""
         zero_k2 = self.jnp.abs(k2) < self.zero_tolerance
         one = self.jnp.asarray(1.0, self.real_dtype)
         matrix = self.jnp.zeros(
             k2.shape + (self.reduced_size, self.reduced_size),
             self.real_dtype,
         )
+        if self.cell_centered:
+            for block in range(self.device_count):
+                alpha_row = 2 * block
+                beta_row = 2 * block + 1
+                matrix = matrix.at[..., alpha_row, alpha_row].set(one)
+                matrix = matrix.at[..., beta_row, beta_row].set(one)
+                if block > 0:
+                    previous_beta = 2 * block - 1
+                    matrix = matrix.at[..., alpha_row, previous_beta].set(
+                        interface[block, 0]
+                    )
+                    matrix = matrix.at[..., beta_row, previous_beta].set(
+                        interface[block, 1]
+                    )
+                if block < self.device_count - 1:
+                    next_alpha = 2 * block + 2
+                    matrix = matrix.at[..., alpha_row, next_alpha].set(
+                        interface[block, 2]
+                    )
+                    matrix = matrix.at[..., beta_row, next_alpha].set(
+                        interface[block, 3]
+                    )
+            return matrix
+
         matrix = matrix.at[..., 0, 0].set(self.jnp.where(zero_k2, one, -one))
         matrix = matrix.at[..., 0, 1].set(self.jnp.where(zero_k2, 0.0 * one, one))
         for block in range(self.device_count):
@@ -159,11 +197,14 @@ class SpikeInterfaceOps:
 
     def build_block_factors(self, interface, k2):
         """Build exact structured block-Thomas interface factors."""
-        bottom_coefficient = self.jnp.where(
-            self.jnp.abs(k2) < self.zero_tolerance,
-            0.0,
-            1.0,
-        ).astype(self.real_dtype)
+        if self.cell_centered:
+            bottom_coefficient = self.jnp.zeros_like(k2, dtype=self.real_dtype)
+        else:
+            bottom_coefficient = self.jnp.where(
+                self.jnp.abs(k2) < self.zero_tolerance,
+                0.0,
+                1.0,
+            ).astype(self.real_dtype)
         zero = self.jnp.zeros_like(bottom_coefficient)
         factors = []
         previous_c1 = zero
@@ -362,15 +403,17 @@ class SpikeInterfaceOps:
                 interface_ny,
                 2 * self.device_count,
             )
-            rhs = self.jnp.concatenate(
-                (self.jnp.zeros_like(rhs[..., :1]), rhs),
-                axis=-1,
-            )
+            if not self.cell_centered:
+                rhs = self.jnp.concatenate(
+                    (self.jnp.zeros_like(rhs[..., :1]), rhs),
+                    axis=-1,
+                )
             solution = self.jnp.einsum("...ij,...j->...i", operator, rhs)
-            solution = self.jnp.concatenate(
-                (solution, self.jnp.zeros_like(solution[..., :1])),
-                axis=-1,
-            )
+            zero = self.jnp.zeros_like(solution[..., :1])
+            if self.cell_centered:
+                solution = self.jnp.concatenate((zero, solution, zero), axis=-1)
+            else:
+                solution = self.jnp.concatenate((solution, zero), axis=-1)
             if self.collective == "allgather":
                 left = self.lax.dynamic_index_in_dim(
                     solution,

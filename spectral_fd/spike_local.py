@@ -22,6 +22,8 @@ class SpikeLocalBlockOps:
         "nz",
         "dz2",
         "real_dtype",
+        "zero_tolerance",
+        "discretization",
         "pcr_steps",
     )
 
@@ -37,6 +39,8 @@ class SpikeLocalBlockOps:
         nz: int,
         dz2: float,
         real_dtype: Any,
+        zero_tolerance: float,
+        discretization: str = "legacy-augmented",
     ) -> None:
         self.jnp = jnp
         self.layout = layout
@@ -47,6 +51,8 @@ class SpikeLocalBlockOps:
         self.nz = nz
         self.dz2 = dz2
         self.real_dtype = real_dtype
+        self.zero_tolerance = zero_tolerance
+        self.discretization = discretization
         self.pcr_steps = max(1, (block_size - 1).bit_length())
 
     @property
@@ -70,6 +76,8 @@ class SpikeLocalBlockOps:
             nz=self.nz,
             dz2=self.dz2,
             real_dtype=self.real_dtype,
+            zero_tolerance=self.zero_tolerance,
+            discretization=self.discretization,
         )
 
     def solve(self, operator1, operator2, operator3, rhs):

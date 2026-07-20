@@ -23,6 +23,29 @@ class JaxRuntimeContext:
     backend: str
 
 
+def runtime_from_initialized_jax(jax_module) -> JaxRuntimeContext:
+    """Describe an application-owned, already initialized JAX runtime.
+
+    This function never changes environment variables and never calls
+    ``jax.distributed.initialize``. Applications that own process startup can
+    therefore construct solver factors without a second runtime owner.
+    """
+
+    import jax.numpy as jnp
+    from jax import lax
+
+    return JaxRuntimeContext(
+        jax=jax_module,
+        jnp=jnp,
+        lax=lax,
+        global_devices=jax_module.device_count(),
+        local_devices=jax_module.local_device_count(),
+        process_count=jax_module.process_count(),
+        process_index=jax_module.process_index(),
+        backend=jax_module.default_backend(),
+    )
+
+
 def initialize_jax_runtime(args) -> JaxRuntimeContext:
     """Configure JAX before import and initialize its distributed runtime."""
     from .runtime import configure_jax_environment, initialize_jax_distributed
@@ -160,6 +183,11 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
     from .tridiagonal import TridiagonalOps
 
     args = config
+    if args.dtype == "float64" and not runtime.jax.config.x64_enabled:
+        raise ValueError(
+            "float64 was requested from an application-owned JAX runtime, "
+            "but jax_enable_x64 is false; enable it before constructing the runtime"
+        )
     jax, jnp, lax = runtime.jax, runtime.jnp, runtime.lax
     nx, ny, nz = args.nx, args.ny, args.nz
     decomposition = SlabDecomposition(
@@ -226,6 +254,7 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
             dz2=dz2,
             real_dtype=real_dtype,
             zero_tolerance=zero_tolerance,
+            discretization=args.discretization,
         )
     )
 
@@ -252,8 +281,9 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
         nz=nz,
         dz2=dz2,
         real_dtype=real_dtype,
+        zero_tolerance=zero_tolerance,
+        discretization=args.discretization,
     )
-    reduced_size = 2 * device_count + 1
     interface_ny = ny // device_count
     adaptive_box = compute_adaptive_mode_box(
         nxh=nxh,
@@ -277,7 +307,9 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
         solver=args.spike_interface_solver,
         ic_cut=adaptive_box.ic_cut,
         jc_cut=adaptive_box.jc_cut,
+        discretization=args.discretization,
     )
+    reduced_size = spike_interface.reduced_size
     adaptive_spike = AdaptiveSpikeOps(
         jnp=jnp,
         lax=lax,
@@ -353,10 +385,13 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
         bottom_coefficient,
     ):
         device_index = lax.axis_index(axis_name)
-        row_mask = (jnp.arange(block_rows) < block_rows - 1) | (
-            device_index != device_count - 1
-        )
-        masked_rhs = jnp.where(z_broadcast(row_mask), rhs_spectrum, 0)
+        if args.discretization == "cell-centered-compatible":
+            masked_rhs = rhs_spectrum * spectral_keep().astype(rhs_spectrum.dtype)
+        else:
+            row_mask = (jnp.arange(block_rows) < block_rows - 1) | (
+                device_index != device_count - 1
+            )
+            masked_rhs = jnp.where(z_broadcast(row_mask), rhs_spectrum, 0)
         local_solution = local_block_solve(
             local_operator1,
             local_operator2,
@@ -384,6 +419,8 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
         return solution, left_right, masked_rhs
 
     def spike_adaptive_pressure_raw(rhs_spectrum, *operators):
+        if args.discretization == "cell-centered-compatible":
+            rhs_spectrum = rhs_spectrum * spectral_keep().astype(rhs_spectrum.dtype)
         return adaptive_spike.apply(
             rhs_spectrum,
             *operators,
@@ -414,6 +451,7 @@ def build_poisson_solver(config, runtime: JaxRuntimeContext) -> PoissonSolverAss
         spike_raw=spike_raw_dispatch,
         spike_filtered=spike_pressure,
         block_rows=build_block_rows,
+        discretization=args.discretization,
     )
 
     setup_token = np.zeros((runtime.local_devices,), dtype=np.float32)

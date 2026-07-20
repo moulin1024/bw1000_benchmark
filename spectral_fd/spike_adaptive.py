@@ -149,11 +149,14 @@ class AdaptiveSpikeOps:
         )
 
         k2 = self.kx[:, None] * self.kx[:, None] + self.ky[None, :] * self.ky[None, :]
-        bottom_ratio = self.jnp.where(
-            self.jnp.abs(k2) < self.zero_tolerance,
-            0.0,
-            -1.0,
-        )
+        if self.interface.cell_centered:
+            bottom_ratio = self.jnp.zeros_like(k2, dtype=self.real_dtype)
+        else:
+            bottom_ratio = self.jnp.where(
+                self.jnp.abs(k2) < self.zero_tolerance,
+                0.0,
+                -1.0,
+            )
         bottom_denominator = 1.0 - w_first * bottom_ratio
         bottom_left_coefficient = -bottom_ratio / self.jnp.where(
             self.jnp.abs(bottom_denominator) > tiny,
@@ -215,14 +218,17 @@ class AdaptiveSpikeOps:
     ):
         """Return unfiltered pressure, interface values, and masked RHS."""
         block_size = self.local_blocks.block_size
-        z_mask = (self.jnp.arange(block_size) < block_size - 1) | (
-            device_index != self.device_count - 1
-        )
-        rhs = self.jnp.where(
-            self.layout.z_broadcast(z_mask),
-            rhs_hat_local,
-            0,
-        )
+        if self.interface.cell_centered:
+            rhs = rhs_hat_local
+        else:
+            z_mask = (self.jnp.arange(block_size) < block_size - 1) | (
+                device_index != self.device_count - 1
+            )
+            rhs = self.jnp.where(
+                self.layout.z_broadcast(z_mask),
+                rhs_hat_local,
+                0,
+            )
         local_solution = self.local_blocks.solve(
             operator1,
             operator2,
@@ -266,22 +272,27 @@ class AdaptiveSpikeOps:
             2 * self.interface.jc_cut,
             2 * self.device_count,
         )
-        rhs_interface = self.jnp.concatenate(
-            (self.jnp.zeros_like(rhs_interface[..., :1]), rhs_interface),
-            axis=-1,
-        )
+        if not self.interface.cell_centered:
+            rhs_interface = self.jnp.concatenate(
+                (self.jnp.zeros_like(rhs_interface[..., :1]), rhs_interface),
+                axis=-1,
+            )
         exact_solution = self.jnp.einsum(
             "...ij,...j->...i",
             exact_inverse,
             rhs_interface,
         )
-        exact_solution = self.jnp.concatenate(
-            (
-                exact_solution,
-                self.jnp.zeros_like(exact_solution[..., :1]),
-            ),
-            axis=-1,
-        )
+        zero = self.jnp.zeros_like(exact_solution[..., :1])
+        if self.interface.cell_centered:
+            exact_solution = self.jnp.concatenate(
+                (zero, exact_solution, zero),
+                axis=-1,
+            )
+        else:
+            exact_solution = self.jnp.concatenate(
+                (exact_solution, zero),
+                axis=-1,
+            )
         left = self.interface.box_scatter(
             left,
             self.lax.dynamic_index_in_dim(

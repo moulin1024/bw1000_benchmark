@@ -14,6 +14,10 @@ InterfaceSolver = Literal["selected-rows", "block-thomas", "dense"]
 PipelineExecution = Literal["monolithic", "staged"]
 DataLayout = Literal["xyz", "z-first"]
 Platform = Literal["cpu", "cuda", "rocm"]
+PoissonDiscretization = Literal[
+    "legacy-augmented",
+    "cell-centered-compatible",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,7 @@ class Poisson3DConfig:
     data_layout: DataLayout = "xyz"
     platform: Platform | None = None
     distributed: bool = False
+    discretization: PoissonDiscretization = "legacy-augmented"
 
     @classmethod
     def from_preset(cls, name: str, **overrides) -> "Poisson3DConfig":
@@ -79,3 +84,16 @@ class Poisson3DConfig:
             raise ValueError("data_layout must be 'xyz' or 'z-first'")
         if self.platform not in (None, "cpu", "cuda", "rocm"):
             raise ValueError("platform must be None, 'cpu', 'cuda', or 'rocm'")
+        if self.discretization not in (
+            "legacy-augmented",
+            "cell-centered-compatible",
+        ):
+            raise ValueError(
+                f"unsupported Poisson discretization: {self.discretization!r}"
+            )
+        if self.discretization == "cell-centered-compatible":
+            if not self.nyquist_filter:
+                raise ValueError(
+                    "cell-centered-compatible requires the self-conjugate "
+                    "horizontal Nyquist modes to be excluded"
+                )

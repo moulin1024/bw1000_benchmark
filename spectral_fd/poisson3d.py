@@ -8,6 +8,7 @@ from .config import (
     PipelineExecution,
     Platform,
     Poisson3DConfig,
+    PoissonDiscretization,
     PoissonMethod,
     TridiagonalSolver,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "PipelineExecution",
     "Platform",
     "Poisson3DConfig",
+    "PoissonDiscretization",
     "Poisson3DSolver",
     "PoissonMethod",
     "TridiagonalSolver",

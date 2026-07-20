@@ -81,6 +81,7 @@ class SpikeLocalBlockOpsTests(unittest.TestCase):
                         nz=8,
                         dz2=0.25,
                         real_dtype=jnp.float32,
+                        zero_tolerance=1.0e-6,
                     )
                     a_block, b_block, c_block = local.build_rows(0)
                     operator1, operator2, operator3, left_spike, right_spike = (

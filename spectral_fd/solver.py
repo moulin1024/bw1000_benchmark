@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import PipelineExecution, Poisson3DConfig
+
+if TYPE_CHECKING:
+    from .factory import JaxRuntimeContext
 
 
 class Poisson3DSolver:
     """Callable distributed Poisson solver with precomputed vertical factors.
 
-    Construction initializes the selected JAX backend and precomputes solver
-    factors. ``solve`` accepts one local slab per local device:
+    By default construction initializes the selected JAX backend and
+    precomputes solver factors. Passing an application-owned
+    :class:`JaxRuntimeContext` skips all runtime initialization. ``solve``
+    accepts one local slab per local device:
 
     - ``z-first``: ``(local_devices, nz / global_devices, ny, nx)``
     - ``xyz``: ``(local_devices, nx, ny, nz / global_devices)``
@@ -21,14 +26,23 @@ class Poisson3DSolver:
     solve pipeline.
     """
 
-    def __init__(self, config: Poisson3DConfig):
+    def __init__(
+        self,
+        config: Poisson3DConfig,
+        *,
+        runtime: JaxRuntimeContext | None = None,
+    ):
         config.validate()
         # Lazy import is important: the implementation sets JAX backend and
         # precision environment variables before importing JAX.
-        from .factory import build_solver_engine
+        from .factory import build_poisson_solver, build_solver_engine
 
         self.config = config
-        self._engine = build_solver_engine(config)
+        self._engine = (
+            build_solver_engine(config)
+            if runtime is None
+            else build_poisson_solver(config, runtime).create_engine(config)
+        )
 
     @classmethod
     def from_preset(cls, name: str, **overrides) -> "Poisson3DSolver":
@@ -72,3 +86,36 @@ class Poisson3DSolver:
     def residual(self, rhs: Any) -> Any:
         """Return the distributed maximum relative tridiagonal residual."""
         return self._engine.residual(rhs)
+
+    def implicit_solve(
+        self,
+        matvec,
+        rhs: Any,
+        *,
+        symmetric: bool = True,
+        transpose_solve=None,
+    ) -> Any:
+        """Apply this factorized solver through JAX implicit differentiation.
+
+        ``matvec`` is the application's semantic operator (for WiRE-LES,
+        ``divergence(gradient(x))``). The caller is responsible for ensuring
+        that the configured spectral/FD rows represent that operator. A
+        nonsymmetric operator must provide its own transpose solve.
+        """
+
+        if not symmetric and transpose_solve is None:
+            raise ValueError(
+                "transpose_solve is required when symmetric=False"
+            )
+        from jax import lax
+
+        def solve(_matvec, value):
+            return self.solve(value)
+
+        return lax.custom_linear_solve(
+            matvec,
+            rhs,
+            solve=solve,
+            transpose_solve=transpose_solve,
+            symmetric=symmetric,
+        )

@@ -90,7 +90,11 @@ class TridiagonalOpsTests(unittest.TestCase):
 
 @unittest.skipIf(jnp is None, "JAX is not installed")
 class SpikeInterfaceOpsTests(unittest.TestCase):
-    def _ops(self, solver: str) -> SpikeInterfaceOps:
+    def _ops(
+        self,
+        solver: str,
+        discretization: str = "legacy-augmented",
+    ) -> SpikeInterfaceOps:
         return SpikeInterfaceOps(
             jnp=jnp,
             lax=lax,
@@ -104,6 +108,7 @@ class SpikeInterfaceOpsTests(unittest.TestCase):
             solver=solver,
             ic_cut=1,
             jc_cut=1,
+            discretization=discretization,
         )
 
     def test_structured_block_solve_matches_dense_interface_matrix(self) -> None:
@@ -152,6 +157,62 @@ class SpikeInterfaceOpsTests(unittest.TestCase):
         results = []
         for solver_name in ("dense", "block-thomas", "selected-rows"):
             ops = self._ops(solver_name)
+            operator, bottom = ops.build_operator(interface, k2, device_index=0)
+            results.append(
+                np.asarray(
+                    ops.apply_operator(
+                        operator,
+                        rhs,
+                        bottom,
+                        device_index=0,
+                    )
+                )
+            )
+
+        np.testing.assert_allclose(results[1], results[0], rtol=2e-6, atol=2e-6)
+        np.testing.assert_allclose(results[2], results[0], rtol=2e-6, atol=2e-6)
+
+    def test_compatible_interface_is_standard_two_endpoint_system(self) -> None:
+        ops = self._ops("dense", "cell-centered-compatible")
+        interface = jnp.asarray(
+            [
+                [[[-0.10]], [[-0.04]], [[-0.03]], [[-0.08]]],
+                [[[-0.07]], [[-0.02]], [[0.00]], [[0.00]]],
+            ],
+            dtype=jnp.float32,
+        )
+        matrix = np.asarray(
+            ops.assemble_matrix(interface, jnp.asarray([[0.0]], jnp.float32))
+        )[0, 0]
+        expected = np.asarray(
+            [
+                [1.0, 0.0, -0.03, 0.0],
+                [0.0, 1.0, -0.08, 0.0],
+                [0.0, -0.07, 1.0, 0.0],
+                [0.0, -0.02, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+
+        self.assertEqual(ops.reduced_size, 4)
+        np.testing.assert_allclose(matrix, expected, rtol=0.0, atol=1.0e-7)
+
+    def test_compatible_dense_block_and_selected_rows_agree(self) -> None:
+        interface = jnp.asarray(
+            [
+                [[[-0.10]], [[-0.04]], [[-0.03]], [[-0.08]]],
+                [[[-0.07]], [[-0.02]], [[0.00]], [[0.00]]],
+            ],
+            dtype=jnp.float32,
+        )
+        rhs = jnp.asarray(
+            [[[[0.3]], [[-0.2]]], [[[0.4]], [[0.1]]]],
+            dtype=jnp.float32,
+        )
+        k2 = jnp.asarray([[0.0]], dtype=jnp.float32)
+        results = []
+        for solver_name in ("dense", "block-thomas", "selected-rows"):
+            ops = self._ops(solver_name, "cell-centered-compatible")
             operator, bottom = ops.build_operator(interface, k2, device_index=0)
             results.append(
                 np.asarray(

@@ -22,6 +22,75 @@ pressure = solver.solve(rhs)
 pressure.block_until_ready()
 ```
 
+## Embedding in an existing JAX application
+
+Applications that own JAX startup can pass an already initialized runtime.
+This path does not set environment variables or call
+`jax.distributed.initialize()` a second time:
+
+```python
+import jax
+
+from spectral_fd import (
+    Poisson3DConfig,
+    Poisson3DSolver,
+    runtime_from_initialized_jax,
+)
+
+# The application initializes JAX/distributed execution before this point.
+runtime = runtime_from_initialized_jax(jax)
+config = Poisson3DConfig(
+    nx=64,
+    ny=32,
+    nz=128,
+    lx=12.0,
+    ly=6.0,
+    lz=6.0,
+    dtype="float32",
+    method="transpose",
+    data_layout="z-first",
+    discretization="cell-centered-compatible",
+)
+solver = Poisson3DSolver(config, runtime=runtime)
+
+# All nz cell-centered RHS planes participate in the solve. The facade
+# removes the distributed constant RHS mode and returns a mean-zero pressure.
+pressure = solver.solve(rhs)
+```
+
+`cell-centered-compatible` implements the compatible projection operator
+`L = D G`: pressure is cell-centered, vertical gradients live on interior
+faces, and homogeneous Neumann boundary fluxes close the first and last cell
+rows. It excludes the self-conjugate horizontal Nyquist modes so that the
+spectral symbols match a real-valued staggered gradient/divergence pair. This
+mode supports the transpose, exact SPIKE, and adaptive SPIKE solvers. The
+compatible SPIKE variants use the standard two-endpoint system with `2P`
+interface rows for `P` z-slabs; they exchange the same two runtime endpoint
+values per block and horizontal mode as the legacy implementation.
+
+Cell-centered pressure does not imply a collocated vertical velocity. In a
+staggered application, `w` remains on vertical faces, the Poisson right-hand
+side is cell-centered, and the vertical pressure operator is the composed map
+`D_z G_z: Cell -> ZFace -> Cell`. The solver stores only the resulting `nz`
+cell-to-cell pressure system and does not impose an application-wide ghost or
+velocity storage convention.
+
+The facade remains composable under an enclosing `jax.jit`. For implicit
+differentiation, supply the application's semantic matrix-vector product:
+
+```python
+pressure = solver.implicit_solve(
+    lambda value: divergence(gradient(value)),
+    rhs,
+)
+```
+
+The default assumes that operator is symmetric. A nonsymmetric operator must
+provide `transpose_solve`. Both the primal and cotangent spaces must obey the
+same mean-zero compatibility constraint. When using `dtype="float64"` with an
+application-owned runtime, enable `jax_enable_x64` before constructing the
+runtime context.
+
 Measured platform configurations are available as named presets:
 
 ```python
